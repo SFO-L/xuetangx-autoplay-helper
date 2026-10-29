@@ -1,7 +1,8 @@
+// AI生成
 // ==UserScript==
 // @name         学堂在线自动播放助手
 // @namespace    http://tampermonkey.net/
-// @version      1.3
+// @version      1.4
 // @description  学堂在线视频自动播放、自动切换下一集、自定义倍速（突破2x上限）
 // @author       sfo
 // @match        https://www.xuetangx.com/learn/*
@@ -147,6 +148,10 @@
         }
     }
 
+    // ==================== 状态锁 ====================
+    let isSwitching = false;          // 防止 ended 事件重复触发 goToNextLesson
+    let isScriptNavigating = false;   // 标记脚本主动跳转，SPA watcher 据此跳过
+
     // ==================== 自动播放 ====================
     let playCheckTimer = null;
 
@@ -172,8 +177,16 @@
 
         video.addEventListener('ended', () => {
             if (!CONFIG.autoNext) return;
+            if (isSwitching) {
+                log('已在切换中，忽略重复 ended 事件');
+                return;
+            }
+            isSwitching = true;
             log('视频播放结束，准备切换下一集');
-            setTimeout(() => goToNextLesson(), 1000);
+            setTimeout(() => {
+                goToNextLesson();
+                isSwitching = false;
+            }, 1500);
         });
 
         // 备用方案：监听视频接近结束时主动触发
@@ -262,7 +275,10 @@
         }
 
         if (nextItem) {
+            isScriptNavigating = true;
             clickLessonItem(nextItem);
+            // 3秒后释放导航标记（此时SPA watcher已处理完毕）
+            setTimeout(() => { isScriptNavigating = false; }, 3000);
         } else {
             log('已经是最后一集了（或后续视频均已完成）');
         }
@@ -293,7 +309,9 @@
             const firstUncompleted = videoItems.find(item => !isVideoCompleted(item));
             if (firstUncompleted && firstUncompleted !== videoItems[activeIndex]) {
                 log('跳转到第一个未完成视频:', firstUncompleted.id);
+                isScriptNavigating = true;
                 clickLessonItem(firstUncompleted);
+                setTimeout(() => { isScriptNavigating = false; }, 3000);
                 return true;
             } else {
                 log('所有视频均已完成');
@@ -666,12 +684,13 @@
         }, 500);
     }
 
-    // ==================== 开启内置自动连播 ====================
-    function enableBuiltinAutoNext() {
+    // ==================== 禁用内置自动连播 ====================
+    // 必须关闭平台自带的自动连播，否则会与脚本的 goToNextLesson 双重触发导致跳集
+    function disableBuiltinAutoNext() {
         const autoNextToggle = document.querySelector('li[data-switch="turns"] .onoff-btn');
-        if (autoNextToggle && autoNextToggle.classList.contains('off')) {
+        if (autoNextToggle && autoNextToggle.classList.contains('on')) {
             autoNextToggle.click();
-            log('已开启内置自动连播');
+            log('已关闭内置自动连播（防止双重切换）');
         }
     }
 
@@ -683,6 +702,10 @@
         const checkUrlChange = () => {
             if (location.href !== lastUrl) {
                 lastUrl = location.href;
+                if (isScriptNavigating) {
+                    log('脚本主动跳转，SPA watcher 跳过初始化');
+                    return;
+                }
                 log('页面切换:', lastUrl);
                 setTimeout(() => initOnPageChange(), 2000);
             }
@@ -701,6 +724,9 @@
     }
 
     function initOnPageChange() {
+        // 确保内置自动连播处于关闭状态
+        disableBuiltinAutoNext();
+
         // 切换为视频筛选模式（跳过作业/考试）
         switchToVideoFilter();
 
@@ -757,7 +783,7 @@
                 setSpeed(CONFIG.defaultSpeed);
                 startAutoPlay();
                 setupAutoNext();
-                enableBuiltinAutoNext();
+                disableBuiltinAutoNext();
 
                 const video = getVideo();
                 if (video && CONFIG.autoPlay && video.paused) {
@@ -769,7 +795,7 @@
                     setSpeed(CONFIG.defaultSpeed);
                     startAutoPlay();
                     setupAutoNext();
-                    enableBuiltinAutoNext();
+                    disableBuiltinAutoNext();
 
                     const video = getVideo();
                     if (video && CONFIG.autoPlay && video.paused) {
